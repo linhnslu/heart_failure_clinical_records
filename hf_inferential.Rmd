@@ -35,7 +35,7 @@ library(pROC)
 ```{r}
 # Load the dataset
 heart_failure <- 
-    read_csv("https://raw.githubusercontent.com/linhnslu/heart_failure_clinical_records/refs/heads/main/heart_failure_clinical_records_dataset.csv")
+    read_csv("https://raw.githubusercontent.com/linhnslu/heart_failure_clinical_records/refs/heads/main/data/heart_failure_clinical_records_dataset.csv")
 ```
 
 ## Data Preparation
