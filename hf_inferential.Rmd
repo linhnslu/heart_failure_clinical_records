@@ -2,219 +2,501 @@
 title: "Heart Failure Inferential Modeling"
 author: "Lin Htet Naing"
 date: "2026-01-16"
-output: html_document
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+    theme: united
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r}
-# Load library
+## Project Overview
+
+This project investigates factors associated with mortality among patients with heart failure using inferential statistical methods. The analysis is based on the Heart Failure Clinical Records dataset from the UCI Machine Learning Repository, which includes demographic characteristics, clinical conditions, and laboratory findings for patients diagnosed with heart failure. The dataset contains both a binary mortality indicator (DEATH_EVENT) and a time-to-event variable (time), enabling analysis of mortality status as well as survival over follow-up. Details of the dataset can be found in the UCI repository (https://archive.ics.uci.edu/dataset/519/heart+failure+clinical+records).
+
+The primary objective of this study is to identify demographic and clinical predictors of mortality and to assess how these factors influence both the odds and timing of death. To achieve this, multivariable logistic regression was used to estimate adjusted associations with mortality status, while Cox proportional hazards model was applied to account for follow-up time and censoring. Together, these complementary approaches provide a comprehensive and interpretable assessment of mortality risk in heart failure patients.
+
+```{r, echo=FALSE, warning=FALSE}
+# Load required libraries
 library(tidyverse)
-
-
+library(knitr)
+library(gtsummary)
+library(survival)
+library(pROC)
 ```
 
 
 ```{r}
+# Load the dataset
+heart_failure <- 
+    read_csv("https://raw.githubusercontent.com/linhnslu/heart_failure_clinical_records/refs/heads/main/heart_failure_clinical_records_dataset.csv")
+```
+
+## Data Preparation
+```{r}
+# check the data
+# glimpse(heart_failure)
+# Convert categorical variables to factors
+df <- heart_failure 
+df <- df |>
+    mutate(
+        DEATH_EVENT = factor(DEATH_EVENT, 
+                             levels = c(0, 1),
+                             labels = c("Survived", "Dead")),
+        sex = factor(sex, 
+                     levels = c(0, 1), 
+                     labels = c("Women", "Men")),
+        anaemia = factor(anaemia, 
+                         levels = c(0, 1),
+                         labels = c("Absent", "Present")),
+        diabetes = factor(diabetes, 
+                          levels = c(0, 1),
+                          labels = c("Absent", "Present")),
+        high_blood_pressure = factor(high_blood_pressure,
+                                     levels = c(0, 1),
+                                     labels = c("Absent", "Present")),
+        smoking = factor(smoking, 
+                         levels = c(0, 1),
+                         labels = c("Absent", "Present"))
+  )
+summary(df)
+# check missing values
+colSums(is.na(df)) # No missing values detected
+```
+
+There is no missing data in the dataset.
+
+## Data Distribution, Summary Statistics, and Statistical Tests
+### Categorical Variables
+```{r}
+# summary statistics and chi-squared test for categorical variables
+# event vs anaemia
+event_anaemia <- df |>
+    select("anaemia" = anaemia, "mortality" = DEATH_EVENT) |>
+    table()
+event_anaemia 
+round(prop.table(event_anaemia, 1), 2) # Row proportions
+chisq.test(event_anaemia)
+
+# event vs diabetes
+event_diabetes <- df |>
+    select("diabetes" = diabetes, "mortality" = DEATH_EVENT) |>
+    table()
+event_diabetes
+round(prop.table(event_diabetes, 1), 2) # Row proportions
+chisq.test(event_diabetes)
+
+# event vs high blood pressure
+event_hbp <- df |>
+    select("high_blood_pressure" = high_blood_pressure, "mortality" = DEATH_EVENT) |>
+    table()
+event_hbp
+round(prop.table(event_hbp, 1), 2) # Row proportions
+chisq.test(event_hbp)
+
+# event vs smoking
+event_smoking <- df |>
+    select("smoking" = smoking, "mortality" = DEATH_EVENT) |>
+    table()
+event_smoking
+round(prop.table(event_smoking, 1), 2) # Row proportions
+chisq.test(event_smoking)
+
+# event vs sex
+event_sex <- df |>
+    select("sex" = sex, "mortality" = DEATH_EVENT) |>
+    table()
+event_sex # 0 = woman, 1 = man
+round(prop.table(event_sex, 1), 2) # Row proportions
+chisq.test(event_sex)
+
+```
+
+There were no statistically significant differences in categorical variables between the outcome groups (all $p > 0.05$). Specifically, the distribution of gender and the prevalence of anaemia, diabetes, hypertension, and smoking status were comparable between patients who experienced the event and those who did not.
+
+### Numerical Variables
+```{r}
+# Check data distribution
+# Numerical variables
+num_vars <- c("age", "creatinine_phosphokinase", "ejection_fraction", 
+              "platelets","serum_creatinine", "serum_sodium")
+df_num <- df |> 
+    select(all_of(num_vars)) |>
+    pivot_longer(cols = everything(), names_to = "variable", values_to = "value")
+
+ggplot(df_num, aes(x = value)) +
+    geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "lightblue", color = "black", alpha = 0.6) +
+    geom_density(color = "#9E1C21", linewidth = 0.6, adjust = 1) +
+    facet_wrap(~ variable, scales = "free") +
+    theme_minimal() +
+    labs(title = "Distributions of Numerical Variables", x = "Value", y = "Density")
+
+# Checking normality with Shapiro-Wilk test
+shapiro_results <- df_num |>
+    group_by(variable) |>
+    summarise(
+        shapiro_p_value = shapiro.test(value)$p.value
+    )
+print(shapiro_results) # All p-values < 0.05, indicating non-normal distributions
+
+```
+
+Distribution plots and Shapiro-Wilk test results indicate that the numerical variables are not normally distributed. Therefore, median and interquartile range (IQR) will be used as summary statistics, and non-parametric tests will be employed for inferential analysis.
 
 
-
+```{r}
+# summary statistics stratified by DEATH_EVENT
+# summary statistics for numerical variables
+num_summary <- df |>
+    select(DEATH_EVENT, all_of(num_vars)) |>
+    pivot_longer(cols = -DEATH_EVENT, names_to = "variable", values_to = "value") |>
+    group_by(DEATH_EVENT, variable) |>
+    summarise(
+        mean = mean(value),
+        sd = sd(value),
+        median = median(value),
+        IQR = IQR(value)
+    )
+print(num_summary)
 ```
 
 
 ```{r}
-
-
+# Satistical tests for numerical variables: Wilcoxon rank-sum test
+num_tests <- df |>
+    select(DEATH_EVENT, all_of(num_vars)) |>
+    pivot_longer(cols = -DEATH_EVENT, names_to = "variable", values_to = "value") |>
+    group_by(variable) |>
+    summarise(
+        wilcox_statistic = wilcox.test(value ~ DEATH_EVENT)$statistic,
+        wilcox_p_value = wilcox.test(value ~ DEATH_EVENT)$p.value
+    )
+print(num_tests)
 
 ```
+
+The difference in numerical variables between the two outcome groups is statistically significant for age, ejection fraction, serum creatinine, and serum sodium. The patients with the event had higher median age and serum creatinine levels, but lower median ejection fraction and serum sodium levels. 
+
+## Characteristics of Study Participants by the Outcome
+```{r}
+# Characteristic table
+df |>
+    dplyr::select(
+        -time,
+        "Age (years)" = age,
+        "Anaemia" = anaemia,
+        "Diabetes" = diabetes,
+        "High Blood Pressure" = high_blood_pressure,
+        "Smoking" = smoking,
+        "Sex" = sex,
+        "Ejection Fraction (%)" = ejection_fraction,
+        "Platelets (kiloplatelets/mL)" = platelets,
+        "Serum Creatinine (mg/dL)" = serum_creatinine,
+        "Serum Sodium (mEq/L)" = serum_sodium,
+        "Creatinine Phosphokinase (mcg/L)" = creatinine_phosphokinase
+    ) |>
+    tbl_summary(
+        by = DEATH_EVENT,
+        statistic = list(
+        all_continuous() ~ "{median} ({IQR})",
+        all_categorical() ~ "{n} ({p}%)"
+        ),
+        digits = all_continuous() ~ 1
+    ) |>
+    add_p(
+        test = list(
+        all_continuous() ~ "wilcox.test",
+        all_categorical() ~ "chisq.test"
+        )
+    ) |>
+    modify_header(label ~ "Characteristic") |>
+    bold_labels() |>
+    modify_caption(
+        "Characteristics of study participants by mortality status"
+        )
+
+```
+
+## Visualizations
+### Boxplots for Numerical Variables
+```{r}
+# Visualizations
+# Boxplots for numerical variables
+df_box <- df |>
+  dplyr::select(DEATH_EVENT, all_of(num_vars)) |>
+  pivot_longer(cols = -DEATH_EVENT, names_to = "variable", values_to = "value")
+
+ggplot(df_box, aes(x = DEATH_EVENT, y = value)) +
+  geom_boxplot(outlier.alpha = 0.6) +
+  facet_wrap(~ variable, scales = "free") +
+  theme_minimal() +
+  labs(title = "Boxplots of Numerical Variables by DEATH_EVENT",
+       x = "DEATH_EVENT",
+       y = "Value") +
+  theme(legend.position = "none")
+```
+
+### Correlation Matrix
+```{r, warning=FALSE}
+# Check correlations among numerical variables
+num_data <- df |> dplyr::select(all_of(num_vars))
+cor_matrix <- cor(num_data)
+print(cor_matrix)
+
+# Visualize correlation matrix
+ggcorrplot::ggcorrplot(cor_matrix, 
+                method = "circle", 
+                lab = TRUE, 
+                lab_size = 3,                # label size
+                hc.order = TRUE,             # Clusters similar variables together
+                colors = c("#E46726", "white", "#6D9EC1"), # color palette
+                outline.color = "white",     # Cleaner look
+                title = "Correlation Matrix of Numerical Variables",
+                ggtheme = theme_minimal())   
+
+```
+
+Numerical variables exhibited weak correlations. No evidence of substantial multicollinearity detected.
+
+## Multivariable Logistic Regression
+
+Multivariable logistic regression models will be developed to assess the association between features and the outcome variable (DEATH_EVENT). A model with full feature set will be developed first and then reduced using backward elimination based on AIC. 
+
+```{r}
+# Full model
+full_model <- glm(DEATH_EVENT ~ age + creatinine_phosphokinase + ejection_fraction + 
+                        platelets + serum_creatinine + serum_sodium + anaemia + 
+                        diabetes + high_blood_pressure + sex + smoking, #time is irrelevant in logistic regression and excluded to avoid data leakage
+                    data = df,
+                    family = binomial)
+summary(full_model)
+
+```
+
+The full model has AIC value 318.28 and identified age, ejection fraction, serum creatinine, and creatinine_phosphokinase as significant predictors of DEATH_EVENT (p < 0.05). 
+
+A parsimonious model with a better AIC will be sought through stepwise selection with backward elimination.
+
+```{r}
+# Stepwise model selection using AIC - Backward elimination
+step_model <- step(full_model, direction = "backward" , trace = 1)
+summary(step_model)
+```
+
+The stepwise model has AIC value 312.05 and retained age, ejection fraction, serum creatinine, and creatinine_phosphokinase as significant predictors of DEATH_EVENT (p < 0.05). As the stepwise model is more parsimonious, it will be used for further analysis and model diagnostics.
+
+### Logistic Regression Model: Assumptions and Diagnostics
+```{r}
+# Model Diagnostics: 1. logit linearity for stepwise model (log-odds vs predictors)
+# predicted probabilities
+probabilities <- predict(step_model, type = "response")
+
+# select continuous variables included in the model and bind with logit
+
+df_step_visual <- df |>
+  mutate(logit = log(probabilities / (1 - probabilities))) |> # log-odds 
+  select(logit, age, creatinine_phosphokinase, ejection_fraction, serum_creatinine, serum_sodium,) |>
+  gather(key = "predictors", value = "predictor_value", -logit)
+
+# log-odds vs predictors plot
+ggplot(df_step_visual, aes(predictor_value, logit)) +
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess", color = "red") + 
+  geom_smooth(method = "lm", color = "blue", linetype = "dashed") +
+  facet_wrap(~predictors, scales = "free_x") +
+  theme_minimal() +
+  labs(title = "Linearity of Logit Check",
+       subtitle = "Red = Actual Trend (Loess), Blue = Linear Assumption")
+```
+
+The predictors age, creatinine phosphoskinase, and ejection fraction closely follow the linear assumption line and thus appear to meet the linearity assumption. Serum creatinine and serum sodium show slight deviation, but not severe enough to warrant concern. (Note: models with transformed variables such as log transformations were tested but did not significantly improve model fit nor the logit linearity assumption.)
+
+```{r}
+# Model Diagnostics: 2. Multicollinearity check using Variance Inflation Factor (VIF)
+car::vif(step_model)
+```
+
+VIF values for all predictors were below 5, indicating no significant multicollinearity issues in the logistic regression model.
+
+```{r}
+# Model Diagnostics: 3. Influential observations check using Cook's distance
+plot(step_model, which = 4, id.n = 3)
+
+# Generally, points with Cook's distance > 4/n are considered influential
+abline(h = 4/nrow(df), col = "red", lty = 2)
+
+# Checking observations with high Cook's distance
+cooksd <- cooks.distance(step_model)
+influential_points <- which(cooksd > (4/nrow(df)))
+View(df[influential_points, ])
+```
+
+```{r}
+# Model Diagnostics: 4. Overall model fit check using Hosmer-Lemeshow test
+generalhoslem::logitgof(df$DEATH_EVENT, fitted(step_model))
+```
+
+The Hosmer–Lemeshow test suggested that the stepwise logistic regression model fit the data adequately, as the p-value was greater than 0.05. Diagnostic checks revealed several influential points (high Cook's distance). These observations featured high, yet plausible, creatinine and CPK values. Since no data entry errors were found and given the relatively small sample size, these points were retained in the analysis.
+
+Because the stepwise model demonstrated good fit and the influential points were not erroneous, it will be considered as the final model. The model is robust for inferential purposes.
 
 
 ```{r}
-
-
+final_model <- step_model
+# Model Performance: Discriminative ability using ROC curve and AUC for the final model
+# ROC object
+roc_obj <- roc(df$DEATH_EVENT, fitted(final_model)) 
+auc_value <- auc(roc_obj)
+plot(x = 1 - roc_obj$specificities, y = roc_obj$sensitivities, type = "l", 
+     xlab = "1 - Specificity", ylab = "Sensitivity", 
+     main = "ROC Curve for Logistic Regression Model", col = "blue", lwd = 2)
+abline(0, 1, lty = 2, col = "blue")
+legend("bottomright", legend = paste("AUC =", round(auc_value, 3)), col = "blue", lwd = 2)
 
 ```
+
+The final model demonstrated good discriminative ability, as indicated by the ROC curve and AUC value (0.803).
+
+### Logistic Regression Model: Interpretation
+
+```{r}
+# Interpretations
+summary(final_model)
+
+# publication-ready table
+final_model |>
+    tbl_regression(
+        exponentiate = TRUE,
+        show_single_row = c(anaemia, high_blood_pressure),
+        label = list(
+        age ~ "Age (years)",
+        creatinine_phosphokinase ~ "Creatinine phosphokinase (mcg/L)",
+        ejection_fraction ~ "Ejection fraction (%)",
+        serum_creatinine ~ "Serum creatinine (mg/dL)",
+        serum_sodium ~ "Serum sodium (mEq/L)",
+        anaemia ~ "Anaemia (Present vs Absent)",
+        high_blood_pressure ~ "High blood pressure (Present vs Absent)"
+        )
+    ) |>
+    bold_labels() |>
+    bold_p(t = 0.05) |>
+    modify_caption(
+        "Multivariable logistic regression examining factors associated with mortality among heart failure patients"
+        )
+```
+
+Multivariable logistic regression model revealed that age, ejection fraction, and serum creatinine were associated with mortality. After adjusting other variables included in the model, each additional year of age increased the odds of death by 5% (OR = 1.05, 95% CI 1.03–1.08). Similarly, each 1 mg/dL increase in serum creatinine nearly doubled mortality odds (OR = 1.94, 95% CI 1.43–2.83). In contrast, higher ejection fraction was protective and reduced the odds of death by approximately 7% (OR = 0.93, 95% CI 0.91–0.96). Creatinine phosphokinase and serum sodium showed borderline associations, and anaemia and high blood pressure were not significantly associated with mortality after adjustment.
+
+
+Although multivariable logistic regression was used to estimate associations between patient characteristics and mortality, this approach does not account for differences in follow-up duration or the timing of death. Given that time-to-event data were available, a Cox proportional hazards model was additionally fitted to evaluate the association between covariates and the hazard of death while appropriately accounting for censoring.
+
+## Cox Proportional Hazards Model
+
+Predictor selection for the Cox model was guided by clinical relevance and prior evidence, with logistic regression results used to support, but not solely determine, variable inclusion.
+
+```{r}
+df <- df |>
+    mutate(DEATH_EVENT = ifelse(DEATH_EVENT == 'Dead', 1, 0))
+# Create a survival object
+surv_obj <- Surv(time = df$time, event = df$DEATH_EVENT)
+
+# Fit Cox proportional hazards model
+cox_model <- coxph(surv_obj ~ age + ejection_fraction + 
+                        serum_creatinine + serum_sodium + anaemia + diabetes + high_blood_pressure, data = df)
+summary(cox_model)
+
+```
+
+
+### Cox Proportional Hazards Model: Assumptions & Diagnostics
+```{r}
+# Model Diagnostics 1: Proportional Hazards Assumption
+cox_zph <- cox.zph(cox_model)
+par(mfrow = c(3, 3))
+plot(cox_zph)
+print(cox_zph)
+```
+
+The proportional hazards assumption was assessed using Schoenfeld residuals. The ejection fraction covariate showed some indication of deviation from proportionality, but the global test of proportional hazards was not rejected (p = 0.296). In the plot of Schoenfeld residuals for ejection fraction, the pattern was broadly similar to the other covariates, although the residuals showed a mildly time-varying trend. Given that the global test was not significant and the residual pattern for ejection fraction did not differ markedly from the others, the proportional hazards assumption was considered to be reasonably satisfied.
 
 
 ```{r}
-
-
-
+# Model Diagnostics 2: Influential observations check using dfbetas
+dfbeta_values <- residuals(cox_model, type = "dfbeta")
+par(mfrow = c(3,3))
+for(i in 1:ncol(dfbeta_values)) {
+    plot(dfbeta_values[, i], main = colnames(dfbeta_values)[i], ylab = names(coef(cox_model))[i], xlab = "Observation Index")
+    abline(h=0, col="red", lty=2)
+}
 ```
 
+Comparing the magnitudes of the largest dfbeta values to the regression coeﬃcients suggests that none of the cases are terribly influential individually. 
 
 ```{r}
+# Model Diagnostics 3: Check for non-linearity using Martingale residuals
+
+martingale_residuals <- residuals(cox_model, type = "martingale")
+X <- as.matrix(df[, c("age", "ejection_fraction", "serum_creatinine", 
+                      "serum_sodium")]) # continuous predictors matrix
+
+# residuals plots
+par(mfrow = c(2, 2))
+for(j in 1:4){
+        plot(X[,j], martingale_residuals, 
+             xlab = c("age", "ejection_fraction", "serum_creatinine", 
+             "serum_sodium")[j],
+             ylab = "residuals")
+        abline(h = 0, lty = 2)
+        lines(lowess(X[, j], martingale_residuals, iter = 0))
+}
 
 
-
+b <- coef(cox_model)[c("age","ejection_fraction", "serum_creatinine", "serum_sodium")] #extract coeffients
+#component-plus-residual plots
+par(mfrow = c(2, 2))
+for(j in 1:4){
+        plot(X[, j], b[j]*X[,j] + martingale_residuals, 
+             xlab = c("age","ejection_fraction", "serum_creatinine", "serum_sodium")[j],
+             ylab = "component + residual")
+        abline(lm(b[j]*X[, j] + martingale_residuals ~ X[, j]), lty = 2)
+        lines(lowess(X[, j], b[j]*X[, j] + martingale_residuals, iter = 0))
+}
 ```
 
+The linearity assumption between the continuous predictors and the log-hazard of the Cox proportional hazards model was evaluated using Martingale and Component plus Residual plots. The Martingale residual plots for age, ejection fraction, serum creatinine, and serum sodium showed a stable, approximately horizontal trend centered at zero, suggesting that the log-hazard for each covariate was adequately modeled as a linear function. The Component plus Residual plots further supported this, as the smoothed trends closely followed the predicted linear reference lines for all variables.
 
+According to model diagnostics, the proportional hazards assumption was reasonably satisfied, and no significant influential observations were detected. The linearity assumption for continuous predictors was also upheld. 
+
+### Cox Proportional Hazards Model: Interpretation
 ```{r}
-
-
-
+# Publication-ready table
+cox_model |>
+    tbl_regression(
+        exponentiate = TRUE,
+        show_single_row = c(anaemia, high_blood_pressure, diabetes),
+        label = list(
+        age ~ "Age (years)",
+        ejection_fraction ~ "Ejection fraction (%)",
+        serum_creatinine ~ "Serum creatinine (mg/dL)",
+        serum_sodium ~ "Serum sodium (mEq/L)",
+        anaemia ~ "Anaemia (Present vs Absent)",
+        diabetes ~ "Diabetes (Present vs Absent)",
+        high_blood_pressure ~ "High blood pressure (Present vs Absent)"
+        )
+    ) |>
+    bold_labels() |>
+    bold_p(t = 0.05) |>
+    modify_caption(
+        "Cox Proportional Hazards Model examining factors associated with hazards of mortality among heart failure patients"
+        )
 ```
 
+In the Cox proportional hazards model, increasing age was associated with a higher risk of death (HR 1.05, 95% CI 1.03–1.07; p < 0.001). Higher ejection fraction was protective (HR 0.95, 95% CI 0.94–0.97; p < 0.001), corresponding to approximately a 5% reduction in hazard risk per 1% increase. Elevated serum creatinine was strongly associated with increased mortality (HR 1.37, 95% CI 1.19–1.57; p < 0.001), indicating a 37% higher hazard per 1 mg/dL increase. Serum sodium showed a modest, non-significant protective association (HR 0.96, 95% CI 0.92–1.01; p = 0.083). Anaemia and diabetes were not significantly associated with mortality, whereas high blood pressure was associated with an increased hazard of death (HR 1.60, 95% CI 1.05–2.42; p = 0.028).
 
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
-
-
-```{r}
-
-
-
-```
+## Conclusion 
+The analysis of the Heart Failure Clinical Records dataset identified key demographic and clinical factors associated with mortality in patients with heart failure. Patients who experienced the event were older, had higher serum creatinine levels, and lower ejection fraction compared with those who survived, while categorical characteristics such as gender, anaemia, diabetes, hypertension, and smoking status were similar between groups. Both multivariable logistic regression and Cox proportional hazards models consistently demonstrated that older age and elevated serum creatinine were associated with higher mortality, whereas higher ejection fraction was protective. The Cox model further accounted for follow-up time and censoring, confirming these associations over the study period and additionally identifying high blood pressure as a predictor of increased hazard.These findings highlight the importance of age, renal function, and cardiac performance as critical determinants of mortality risk in this population.
